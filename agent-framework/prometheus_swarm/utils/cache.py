@@ -1,13 +1,14 @@
 from functools import wraps
 import time
 from typing import Any, Callable, Dict, Optional
+from collections import OrderedDict
 
 class TTLCache:
     """
     A thread-safe time-based cache with configurable TTL (Time To Live).
     
     This cache stores function results and automatically expires entries
-    after a specified time period.
+    after a specified time period. It uses an OrderedDict to manage max size.
     """
     def __init__(self, max_size: int = 128, default_ttl: int = 300):
         """
@@ -17,19 +18,22 @@ class TTLCache:
             max_size (int): Maximum number of entries in the cache. Defaults to 128.
             default_ttl (int): Default time-to-live for cache entries in seconds. Defaults to 5 minutes.
         """
-        self._cache: Dict[str, Dict[str, Any]] = {}
+        self._cache: OrderedDict = OrderedDict()
         self._max_size = max_size
         self._default_ttl = default_ttl
 
     def _cleanup(self):
-        """Remove expired entries from the cache."""
+        """Remove expired entries from the cache, maintaining max_size."""
         current_time = time.time()
-        expired_keys = [
-            key for key, entry in self._cache.items() 
-            if current_time > entry['expires']
-        ]
-        for key in expired_keys:
-            del self._cache[key]
+        
+        # Remove expired entries
+        for key in list(self._cache.keys()):
+            if current_time > self._cache[key]['expires']:
+                del self._cache[key]
+        
+        # If still over max_size, remove oldest non-expired entries
+        while len(self._cache) > self._max_size:
+            self._cache.popitem(last=False)
 
     def get(self, key: str) -> Optional[Any]:
         """
@@ -42,15 +46,18 @@ class TTLCache:
             The cached value if it exists and hasn't expired, otherwise None.
         """
         current_time = time.time()
-        entry = self._cache.get(key)
         
-        if entry is None:
+        if key not in self._cache:
             return None
+        
+        entry = self._cache[key]
         
         if current_time > entry['expires']:
             del self._cache[key]
             return None
         
+        # Move to end to show it's most recently used
+        self._cache.move_to_end(key)
         return entry['value']
 
     def set(self, key: str, value: Any, ttl: Optional[int] = None):
@@ -62,14 +69,19 @@ class TTLCache:
             value (Any): The value to cache.
             ttl (Optional[int]): Time-to-live in seconds. Uses default if not specified.
         """
-        if len(self._cache) >= self._max_size:
-            self._cleanup()
+        # If the key already exists, remove it first
+        if key in self._cache:
+            del self._cache[key]
         
+        # Add to the end (most recently used)
         expires = time.time() + (ttl or self._default_ttl)
         self._cache[key] = {
             'value': value,
             'expires': expires
         }
+        
+        # If over max size, remove oldest entries
+        self._cleanup()
 
     def cached(self, ttl: Optional[int] = None):
         """
