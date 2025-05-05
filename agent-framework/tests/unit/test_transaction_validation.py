@@ -78,17 +78,18 @@ def test_transaction_id_release():
     # Release the transaction ID
     manager.release_transaction_id(transaction_id)
     
-    # Re-generate should be possible
-    new_transaction_id = manager.generate_transaction_id()
-    assert new_transaction_id == transaction_id
+    # Verify the transaction ID is no longer in used IDs
+    assert transaction_id not in manager._used_transaction_ids
 
 def test_max_stored_ids():
     """Test maximum stored IDs limit"""
     manager = TransactionIDManager(max_stored_ids=3)
     
     # Generate more IDs than max stored
-    for _ in range(5):
-        manager.generate_transaction_id()
+    ids = [manager.generate_transaction_id() for _ in range(5)]
     
     # Internal set should not exceed max_stored_ids
     assert len(manager._used_transaction_ids) <= 3
+    
+    # The most recently generated IDs should be present
+    assert set(ids[-3:]) == manager._used_transaction_ids
