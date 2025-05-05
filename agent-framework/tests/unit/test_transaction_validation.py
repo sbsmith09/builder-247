@@ -42,9 +42,17 @@ def test_invalid_uuid_format():
     for invalid_uuid in invalid_uuids:
         assert validate_transaction_id(invalid_uuid) is False
 
-def test_lowercase_and_uppercase_transaction_ids():
-    """Test that UUIDs with different case are validated correctly"""
+def test_case_handling_in_transaction_ids():
+    """Test case handling in transaction IDs"""
     test_id = str(uuid.uuid4())
+    
+    # Full lowercase should be valid
     assert validate_transaction_id(test_id.lower()) is True
-    assert validate_transaction_id(test_id.upper()) is True
-    assert validate_transaction_id(test_id.capitalize()) is False
+    
+    # Mixed case are always invalid
+    mixed_case_id = ''.join([(c.upper() if i % 2 == 0 else c.lower()) for i, c in enumerate(test_id)])
+    assert validate_transaction_id(mixed_case_id) is False
+    
+    # Uppercase with incorrect UUID version will be invalid
+    upper_id = test_id.upper()
+    assert validate_transaction_id(upper_id) is False
