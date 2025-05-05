@@ -26,7 +26,7 @@ def test_joke_caching(joke_service):
 
 def test_joke_cache_expiration(joke_service):
     """Test that cache entries expire after TTL."""
-    joke_service.cache_ttl = 1  # Set very short TTL
+    joke_service.cache = TTLCache(default_ttl=1)  # Set very short TTL
     joke1 = joke_service.get_joke()
     
     # Wait for cache to expire
@@ -40,7 +40,11 @@ def test_joke_cache_expiration(joke_service):
 
 def test_specific_joke_retrieval(joke_service):
     """Test retrieving a specific joke."""
-    joke_id = 'abc123'  # Replace with a real joke ID from your API
+    # First, get a real joke ID
+    initial_joke = joke_service.get_joke()
+    joke_id = initial_joke.get('id')
+    
+    # Retrieve the same joke again
     joke = joke_service.get_joke(joke_id)
     assert 'id' in joke
     assert joke['id'] == joke_id
