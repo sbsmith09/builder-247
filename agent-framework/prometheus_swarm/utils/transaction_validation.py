@@ -7,7 +7,8 @@ def validate_transaction_id(transaction_id: str) -> bool:
     1. Must be a valid UUID (v4)
     2. Must be a string
     3. Cannot be empty or just whitespace
-    4. Must match exact UUID format (case-sensitive)
+    4. Must match lowercase UUID format
+    5. Cannot be mixed-case or differently cased UUIDs
 
     Args:
         transaction_id (str): The transaction ID to validate
@@ -23,17 +24,19 @@ def validate_transaction_id(transaction_id: str) -> bool:
     if not transaction_id or transaction_id.isspace():
         return False
 
-    # Regex pattern for strict v4 UUID validation
-    uuid_pattern = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$', re.IGNORECASE)
+    # Regex pattern for strict v4 UUID validation in lowercase
+    uuid_pattern = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$')
 
     # Validate UUID format
     if not uuid_pattern.match(transaction_id):
         return False
 
-    # Further validate using uuid module to ensure it's a valid v4 UUID
+    # Validate UUID and ensure it's in lowercase
     try:
+        # Attempt to create a UUID object to verify version and integrity
         uuid_obj = uuid.UUID(transaction_id, version=4)
-        # Confirm the UUID is in canonical lowercase format
-        return str(uuid_obj) == transaction_id.lower()
+        
+        # Confirm the UUID is in lowercase and matches exactly
+        return str(uuid_obj) == transaction_id
     except (ValueError, AttributeError):
         return False
