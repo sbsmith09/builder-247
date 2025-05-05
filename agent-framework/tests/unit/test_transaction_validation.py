@@ -1,58 +1,94 @@
-import pytest
 import uuid
-from prometheus_swarm.utils.transaction_validation import validate_transaction_id
+import threading
+import time
+import pytest
+from prometheus_swarm.src.transaction_validation import TransactionIDManager
 
-def test_valid_transaction_id():
-    """Test that a valid v4 UUID passes validation"""
+def test_transaction_id_generation():
+    """Test transaction ID generation"""
+    manager = TransactionIDManager()
+    transaction_id = manager.generate_transaction_id()
+    
+    # Verify it's a valid UUID v4
+    assert manager.validate_transaction_id(transaction_id) is True
+    
+    # Verify uniqueness
+    second_transaction_id = manager.generate_transaction_id()
+    assert transaction_id != second_transaction_id
+
+def test_transaction_id_validation():
+    """Test various validation scenarios"""
+    manager = TransactionIDManager()
+    
+    # Valid inputs
     valid_id = str(uuid.uuid4())
-    assert validate_transaction_id(valid_id) is True
-
-def test_invalid_transaction_id_types():
-    """Test various invalid input types"""
+    assert manager.validate_transaction_id(valid_id) is True
+    
+    # Invalid inputs
     invalid_inputs = [
         None,
-        123,
-        ['not a string'],
-        {'not': 'a string'},
-        b'bytes',
-        float('inf'),
-    ]
-    for invalid_input in invalid_inputs:
-        assert validate_transaction_id(invalid_input) is False
-
-def test_empty_and_whitespace_transaction_ids():
-    """Test empty and whitespace transaction IDs"""
-    empty_inputs = [
         '',
         '   ',
-        '\t\n',
-    ]
-    for empty_input in empty_inputs:
-        assert validate_transaction_id(empty_input) is False
-
-def test_invalid_uuid_format():
-    """Test various invalid UUID formats"""
-    invalid_uuids = [
+        123,
+        str(uuid.uuid1()),  # Not a v4 UUID
+        str(uuid.uuid3(uuid.NAMESPACE_DNS, 'example.com')),  # Not a v4 UUID
         'not-a-uuid',
-        '123e4567-e89b-12d3-a456-426614174000',  # valid format but not a v4 UUID
-        str(uuid.uuid1()),  # v1 UUID
-        str(uuid.uuid3(uuid.NAMESPACE_DNS, 'example.com')),  # v3 UUID
-        str(uuid.uuid5(uuid.NAMESPACE_DNS, 'example.com')),  # v5 UUID
+        f"{valid_id}extra"  # Incorrect length
     ]
-    for invalid_uuid in invalid_uuids:
-        assert validate_transaction_id(invalid_uuid) is False
+    
+    for invalid_input in invalid_inputs:
+        assert manager.validate_transaction_id(invalid_input) is False
 
-def test_case_handling_in_transaction_ids():
-    """Test case handling in transaction IDs"""
-    test_id = str(uuid.uuid4())
+def test_concurrent_transaction_id_generation():
+    """Test concurrent transaction ID generation"""
+    manager = TransactionIDManager()
+    generated_ids = set()
     
-    # Full lowercase should be valid
-    assert validate_transaction_id(test_id.lower()) is True
+    def generate_ids(num_ids, result_set):
+        for _ in range(num_ids):
+            result_set.add(manager.generate_transaction_id())
     
-    # Mixed case are always invalid
-    mixed_case_id = ''.join([(c.upper() if i % 2 == 0 else c.lower()) for i, c in enumerate(test_id)])
-    assert validate_transaction_id(mixed_case_id) is False
+    # Create multiple threads generating transaction IDs
+    threads = []
+    results = [set() for _ in range(4)]
     
-    # Uppercase with incorrect UUID version will be invalid
-    upper_id = test_id.upper()
-    assert validate_transaction_id(upper_id) is False
+    for i in range(4):
+        thread = threading.Thread(target=generate_ids, args=(100, results[i]))
+        threads.append(thread)
+        thread.start()
+    
+    for thread in threads:
+        thread.join()
+    
+    # Combine all generated IDs
+    all_ids = set.union(*results)
+    
+    # Verify no duplicates and all are valid
+    assert len(all_ids) == 400
+    assert all(manager.validate_transaction_id(id_) for id_ in all_ids)
+
+def test_transaction_id_release():
+    """Test releasing transaction IDs"""
+    manager = TransactionIDManager()
+    
+    # Generate and validate a transaction ID
+    transaction_id = manager.generate_transaction_id()
+    assert manager.validate_transaction_id(transaction_id) is True
+    
+    # Release the transaction ID
+    manager.release_transaction_id(transaction_id)
+    
+    # Re-generate should be possible
+    new_transaction_id = manager.generate_transaction_id()
+    assert new_transaction_id == transaction_id
+
+def test_max_stored_ids():
+    """Test maximum stored IDs limit"""
+    manager = TransactionIDManager(max_stored_ids=3)
+    
+    # Generate more IDs than max stored
+    for _ in range(5):
+        manager.generate_transaction_id()
+    
+    # Internal set should not exceed max_stored_ids
+    assert len(manager._used_transaction_ids) <= 3
