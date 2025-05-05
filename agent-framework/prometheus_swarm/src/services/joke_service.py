@@ -1,7 +1,7 @@
 import requests
 import logging
 from typing import Dict, Optional
-from ..src.utils.cache import TTLCache
+from ..utils.cache import TTLCache  # Corrected import
 
 logger = logging.getLogger(__name__)
 
