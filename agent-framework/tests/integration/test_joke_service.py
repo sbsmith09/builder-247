@@ -1,6 +1,7 @@
 import pytest
 import time
 from prometheus_swarm.src.services.joke_service import JokeService
+from prometheus_swarm.src.utils.cache import TTLCache
 
 @pytest.fixture
 def joke_service():
@@ -39,15 +40,18 @@ def test_joke_cache_expiration(joke_service):
     assert cache_performance['misses'] > 0
 
 def test_specific_joke_retrieval(joke_service):
-    """Test retrieving a specific joke."""
-    # First, get a real joke ID
+    """Test retrieving a random joke, then attempting to retrieve it from cache."""
+    # First, get a random joke
     initial_joke = joke_service.get_joke()
     joke_id = initial_joke.get('id')
+    initial_text = initial_joke.get('joke')
     
-    # Retrieve the same joke again
-    joke = joke_service.get_joke(joke_id)
-    assert 'id' in joke
-    assert joke['id'] == joke_id
+    # Retrieve the joke again from cache
+    cached_joke = joke_service.get_joke(joke_id)
+    
+    # Verify the cached joke matches the initial joke
+    assert cached_joke.get('id') == joke_id
+    assert cached_joke.get('joke') == initial_text
 
 def test_cache_performance_tracking(joke_service):
     """Verify cache performance tracking."""
