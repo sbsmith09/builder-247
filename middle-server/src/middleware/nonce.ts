@@ -1,79 +1,118 @@
 import { Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
 
-// Interface to store nonce tracking
-interface NonceStore {
-  [nonce: string]: number;
+// Configuration interface for flexible nonce middleware
+export interface NonceConfig {
+  headerName?: string;
+  maxNonceAge?: number;
+  nonceLength?: number;
+  excludedMethods?: string[];
 }
 
-class NonceMiddleware {
-  private nonceStore: NonceStore = {};
-  private maxNonceAge: number; // in milliseconds
+export class NonceMiddleware {
+  private config: Required<NonceConfig>;
+  private nonceStore: Map<string, number>;
 
-  constructor(maxNonceAge: number = 5 * 60 * 1000) { // Default 5 minutes
-    this.maxNonceAge = maxNonceAge;
+  constructor(config: NonceConfig = {}) {
+    // Default configuration with sensible defaults
+    this.config = {
+      headerName: 'X-Nonce',
+      maxNonceAge: 5 * 60 * 1000, // 5 minutes
+      nonceLength: 32, // 32 bytes = 64 hex characters
+      excludedMethods: ['GET', 'HEAD', 'OPTIONS'],
+      ...config
+    };
+
+    this.nonceStore = new Map();
   }
 
   /**
-   * Generate a unique nonce
-   * @returns {string} A cryptographically secure random nonce
+   * Generate a cryptographically secure nonce
+   * @returns {string} Hex-encoded nonce
    */
   private generateNonce(): string {
-    return crypto.randomBytes(32).toString('hex');
+    return crypto.randomBytes(this.config.nonceLength).toString('hex');
   }
 
   /**
-   * Cleanup expired nonces from store
+   * Remove expired nonces from the store
    */
   private cleanupExpiredNonces(): void {
     const now = Date.now();
-    Object.keys(this.nonceStore).forEach(nonce => {
-      if (now - this.nonceStore[nonce] > this.maxNonceAge) {
-        delete this.nonceStore[nonce];
+    for (const [nonce, timestamp] of this.nonceStore.entries()) {
+      if (now - timestamp > this.config.maxNonceAge) {
+        this.nonceStore.delete(nonce);
       }
-    });
+    }
   }
 
   /**
-   * Middleware to generate and validate nonces
-   * @param req Express request object
-   * @param res Express response object
-   * @param next Express next function
+   * Validate and consume a nonce
+   * @param nonce Nonce to validate
+   * @returns {boolean} Whether the nonce is valid
    */
-  public nonceMiddleware = (req: Request, res: Response, next: NextFunction): void => {
-    // Cleanup expired nonces
-    this.cleanupExpiredNonces();
+  private validateAndConsumeNonce(nonce: string): boolean {
+    if (!nonce) return false;
 
-    // For GET requests, generate and send a new nonce
-    if (req.method === 'GET') {
-      const nonce = this.generateNonce();
-      this.nonceStore[nonce] = Date.now();
-      res.set('X-Nonce', nonce);
+    const timestamp = this.nonceStore.get(nonce);
+    if (!timestamp) return false;
+
+    // Remove the nonce after validation to prevent replay
+    this.nonceStore.delete(nonce);
+
+    return true;
+  }
+
+  /**
+   * Middleware function for nonce generation and validation
+   */
+  public handler = (req: Request, res: Response, next: NextFunction): void => {
+    try {
+      // Clean up expired nonces
+      this.cleanupExpiredNonces();
+
+      // Skip nonce validation for excluded methods
+      if (this.config.excludedMethods.includes(req.method)) {
+        return next();
+      }
+
+      // For write methods, validate nonce
+      const clientNonce = req.get(this.config.headerName);
+
+      // Validate nonce
+      if (!this.validateAndConsumeNonce(clientNonce)) {
+        return res.status(403).json({
+          error: 'Invalid or expired nonce',
+          message: 'A valid nonce is required for this request method'
+        });
+      }
+
       next();
-      return;
+    } catch (error) {
+      // Graceful error handling
+      res.status(500).json({
+        error: 'Nonce middleware error',
+        message: error instanceof Error ? error.message : 'Unknown error'
+      });
     }
+  }
 
-    // For other methods (POST, PUT, DELETE), validate the nonce
-    const clientNonce = req.get('X-Nonce');
+  /**
+   * Generate and inject a new nonce into the response
+   */
+  public generateNonceHeader = (req: Request, res: Response, next: NextFunction): void => {
+    // Generate a new nonce
+    const nonce = this.generateNonce();
 
-    // Check if nonce is present
-    if (!clientNonce) {
-      res.status(400).json({ error: 'Nonce is required' });
-      return;
-    }
+    // Store the nonce with current timestamp
+    this.nonceStore.set(nonce, Date.now());
 
-    // Check if nonce exists and is not expired
-    const nonceTimestamp = this.nonceStore[clientNonce];
-    if (!nonceTimestamp) {
-      res.status(400).json({ error: 'Invalid nonce' });
-      return;
-    }
-
-    // Remove the nonce after use to prevent replay attacks
-    delete this.nonceStore[clientNonce];
+    // Set nonce in response header
+    res.set(this.config.headerName, nonce);
 
     next();
   }
 }
 
+// Export a default instance with standard configuration
 export default new NonceMiddleware();
