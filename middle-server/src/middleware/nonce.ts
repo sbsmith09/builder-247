@@ -1,12 +1,13 @@
 import { Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
 
-// Configuration interface for flexible nonce middleware
+// Comprehensive configuration interface for nonce middleware
 export interface NonceConfig {
-  headerName?: string;
-  maxNonceAge?: number;
-  nonceLength?: number;
-  excludedMethods?: string[];
+  headerName?: string;         // Custom header for nonce
+  maxNonceAge?: number;        // Nonce expiration time
+  nonceLength?: number;        // Nonce byte length
+  excludedMethods?: string[];  // Methods to skip nonce validation
+  maxNonceStore?: number;      // Maximum number of stored nonces
 }
 
 export class NonceMiddleware {
@@ -14,12 +15,13 @@ export class NonceMiddleware {
   private nonceStore: Map<string, number>;
 
   constructor(config: NonceConfig = {}) {
-    // Default configuration with sensible defaults
+    // Comprehensive default configuration
     this.config = {
       headerName: 'X-Nonce',
-      maxNonceAge: 5 * 60 * 1000, // 5 minutes
-      nonceLength: 32, // 32 bytes = 64 hex characters
+      maxNonceAge: 5 * 60 * 1000,   // 5 minutes
+      nonceLength: 32,              // 32 bytes = 64 hex characters
       excludedMethods: ['GET', 'HEAD', 'OPTIONS'],
+      maxNonceStore: 1000,          // Prevent memory exhaustion
       ...config
     };
 
@@ -35,14 +37,29 @@ export class NonceMiddleware {
   }
 
   /**
-   * Remove expired nonces from the store
+   * Remove expired and excess nonces from the store
    */
-  private cleanupExpiredNonces(): void {
+  private cleanupNonceStore(): void {
     const now = Date.now();
+    const expiredNonces: string[] = [];
+
+    // Find expired nonces
     for (const [nonce, timestamp] of this.nonceStore.entries()) {
       if (now - timestamp > this.config.maxNonceAge) {
-        this.nonceStore.delete(nonce);
+        expiredNonces.push(nonce);
       }
+    }
+
+    // Remove expired nonces
+    expiredNonces.forEach(nonce => this.nonceStore.delete(nonce));
+
+    // Trim store if it exceeds max size
+    if (this.nonceStore.size > this.config.maxNonceStore) {
+      const oldestNonces = Array.from(this.nonceStore.entries())
+        .sort((a, b) => a[1] - b[1])
+        .slice(0, this.nonceStore.size - this.config.maxNonceStore);
+
+      oldestNonces.forEach(([nonce]) => this.nonceStore.delete(nonce));
     }
   }
 
@@ -57,42 +74,52 @@ export class NonceMiddleware {
     const timestamp = this.nonceStore.get(nonce);
     if (!timestamp) return false;
 
+    const now = Date.now();
+    if (now - timestamp > this.config.maxNonceAge) return false;
+
     // Remove the nonce after validation to prevent replay
     this.nonceStore.delete(nonce);
-
     return true;
   }
 
   /**
-   * Middleware function for nonce generation and validation
+   * Middleware to validate nonces for protected routes
    */
   public handler = (req: Request, res: Response, next: NextFunction): void => {
     try {
-      // Clean up expired nonces
-      this.cleanupExpiredNonces();
+      // Clean up the nonce store
+      this.cleanupNonceStore();
 
       // Skip nonce validation for excluded methods
       if (this.config.excludedMethods.includes(req.method)) {
         return next();
       }
 
-      // For write methods, validate nonce
+      // Retrieve nonce from request header
       const clientNonce = req.get(this.config.headerName);
 
       // Validate nonce
       if (!this.validateAndConsumeNonce(clientNonce)) {
         return res.status(403).json({
-          error: 'Invalid or expired nonce',
-          message: 'A valid nonce is required for this request method'
+          error: 'Nonce Validation Failed',
+          message: 'Invalid, expired, or already used nonce',
+          details: {
+            method: req.method,
+            path: req.path
+          }
         });
       }
 
       next();
     } catch (error) {
-      // Graceful error handling
+      // Comprehensive error handling
       res.status(500).json({
-        error: 'Nonce middleware error',
-        message: error instanceof Error ? error.message : 'Unknown error'
+        error: 'Nonce Middleware Error',
+        message: error instanceof Error ? error.message : 'Unknown error occurred',
+        details: {
+          method: req.method,
+          path: req.path
+        }
       });
     }
   }
@@ -101,16 +128,43 @@ export class NonceMiddleware {
    * Generate and inject a new nonce into the response
    */
   public generateNonceHeader = (req: Request, res: Response, next: NextFunction): void => {
-    // Generate a new nonce
-    const nonce = this.generateNonce();
+    try {
+      // Clean up the nonce store before generating a new nonce
+      this.cleanupNonceStore();
 
-    // Store the nonce with current timestamp
-    this.nonceStore.set(nonce, Date.now());
+      // Generate a new unique nonce
+      const nonce = this.generateNonce();
 
-    // Set nonce in response header
-    res.set(this.config.headerName, nonce);
+      // Store the nonce with current timestamp
+      this.nonceStore.set(nonce, Date.now());
 
-    next();
+      // Set nonce in response header
+      res.set(this.config.headerName, nonce);
+
+      next();
+    } catch (error) {
+      // Fallback error handling
+      res.status(500).json({
+        error: 'Nonce Generation Failed',
+        message: error instanceof Error ? error.message : 'Unable to generate nonce'
+      });
+    }
+  }
+
+  /**
+   * Get current nonce store statistics
+   */
+  public getNonceStoreStats(): { 
+    currentSize: number, 
+    maxSize: number, 
+    oldestNonce?: number 
+  } {
+    const timestamps = Array.from(this.nonceStore.values());
+    return {
+      currentSize: this.nonceStore.size,
+      maxSize: this.config.maxNonceStore,
+      oldestNonce: timestamps.length > 0 ? Math.min(...timestamps) : undefined
+    };
   }
 }
 
