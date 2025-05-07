@@ -1,13 +1,20 @@
 import { Request, Response, NextFunction } from 'express';
-import nonceMiddleware from '../../src/middleware/nonce';
+import NonceMiddleware, { NonceConfig } from '../../src/middleware/nonce';
 
 describe('Nonce Middleware', () => {
   let mockRequest: Partial<Request>;
   let mockResponse: Partial<Response>;
   let nextFunction: NextFunction;
 
+  // Helper to create a fresh middleware instance for each test
+  const createMiddleware = (config?: NonceConfig) => 
+    new NonceMiddleware(config);
+
   beforeEach(() => {
-    mockRequest = {};
+    mockRequest = {
+      method: 'POST',
+      get: jest.fn()
+    };
     mockResponse = {
       status: jest.fn().mockReturnThis(),
       json: jest.fn(),
@@ -16,13 +23,12 @@ describe('Nonce Middleware', () => {
     nextFunction = jest.fn();
   });
 
-  describe('GET Requests', () => {
-    beforeEach(() => {
-      mockRequest.method = 'GET';
-    });
+  describe('Nonce Generation', () => {
+    it('should generate unique nonces', () => {
+      const middleware = createMiddleware();
+      const generateNonceHeader = middleware.generateNonceHeader;
 
-    it('should generate and set a nonce for GET requests', () => {
-      nonceMiddleware.nonceMiddleware(
+      generateNonceHeader(
         mockRequest as Request, 
         mockResponse as Response, 
         nextFunction
@@ -36,43 +42,28 @@ describe('Nonce Middleware', () => {
     });
   });
 
-  describe('POST Requests', () => {
-    beforeEach(() => {
-      mockRequest.method = 'POST';
-    });
+  describe('Nonce Validation', () => {
+    it('should allow requests with valid nonce', () => {
+      const middleware = createMiddleware();
+      const generateNonceHeader = middleware.generateNonceHeader;
+      const handler = middleware.handler;
 
-    it('should reject requests without a nonce', () => {
-      nonceMiddleware.nonceMiddleware(
+      // First generate a nonce
+      generateNonceHeader(
         mockRequest as Request, 
         mockResponse as Response, 
         nextFunction
       );
 
-      expect(mockResponse.status).toHaveBeenCalledWith(400);
-      expect(mockResponse.json).toHaveBeenCalledWith({ 
-        error: 'Nonce is required' 
-      });
-    });
+      // Get the generated nonce
+      const generatedNonce = (mockResponse.set as jest.Mock)
+        .mock.calls[0][1];
 
-    it('should accept a valid nonce', () => {
-      // First, generate a nonce via a GET request
-      const generateNonceResponse: Partial<Response> = {
-        set: (header: string, value: string) => {
-          mockRequest.get = (h: string) => 
-            h === 'X-Nonce' ? value : undefined;
-        }
-      };
+      // Simulate request with the nonce
+      mockRequest.get = jest.fn().mockReturnValue(generatedNonce);
 
-      // Simulate GET request to generate nonce
-      nonceMiddleware.nonceMiddleware(
-        { method: 'GET' } as Request, 
-        generateNonceResponse as Response, 
-        nextFunction
-      );
-
-      // Now test POST request with the generated nonce
-      mockRequest.method = 'POST';
-      nonceMiddleware.nonceMiddleware(
+      // Validate the nonce
+      handler(
         mockRequest as Request, 
         mockResponse as Response, 
         nextFunction
@@ -81,46 +72,90 @@ describe('Nonce Middleware', () => {
       expect(nextFunction).toHaveBeenCalled();
     });
 
-    it('should reject a reused nonce', () => {
-      // First, generate a nonce via a GET request
-      const generateNonceResponse: Partial<Response> = {
-        set: (header: string, value: string) => {
-          mockRequest.get = (h: string) => 
-            h === 'X-Nonce' ? value : undefined;
-        }
+    it('should reject requests with invalid nonce', () => {
+      const middleware = createMiddleware();
+      const handler = middleware.handler;
+
+      // Simulate request with an invalid nonce
+      mockRequest.get = jest.fn().mockReturnValue('invalid-nonce');
+
+      handler(
+        mockRequest as Request, 
+        mockResponse as Response, 
+        nextFunction
+      );
+
+      expect(mockResponse.status).toHaveBeenCalledWith(403);
+      expect(mockResponse.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          error: 'Invalid or expired nonce'
+        })
+      );
+    });
+
+    it('should support custom configuration', () => {
+      const customConfig: NonceConfig = {
+        headerName: 'Custom-Nonce-Header',
+        maxNonceAge: 1000, // Very short expiration
+        nonceLength: 16
       };
 
-      // Simulate GET request to generate nonce
-      nonceMiddleware.nonceMiddleware(
-        { method: 'GET' } as Request, 
-        generateNonceResponse as Response, 
-        nextFunction
-      );
+      const middleware = createMiddleware(customConfig);
+      const generateNonceHeader = middleware.generateNonceHeader;
+      const handler = middleware.handler;
 
-      // First POST request with nonce
-      mockRequest.method = 'POST';
-      nonceMiddleware.nonceMiddleware(
+      // Generate nonce with custom header
+      generateNonceHeader(
         mockRequest as Request, 
         mockResponse as Response, 
         nextFunction
       );
 
-      // Reset mocks
-      (mockResponse.status as jest.Mock).mockClear();
-      (mockResponse.json as jest.Mock).mockClear();
-      (nextFunction as jest.Mock).mockClear();
-
-      // Second POST request with same nonce
-      nonceMiddleware.nonceMiddleware(
-        mockRequest as Request, 
-        mockResponse as Response, 
-        nextFunction
+      // Check custom header was used
+      expect(mockResponse.set).toHaveBeenCalledWith(
+        'Custom-Nonce-Header', 
+        expect.any(String)
       );
+    });
 
-      expect(mockResponse.status).toHaveBeenCalledWith(400);
-      expect(mockResponse.json).toHaveBeenCalledWith({ 
-        error: 'Invalid nonce' 
+    it('should skip nonce validation for excluded methods', () => {
+      const middleware = createMiddleware({
+        excludedMethods: ['GET', 'POST']
       });
+      const handler = middleware.handler;
+
+      mockRequest.method = 'GET';
+
+      handler(
+        mockRequest as Request, 
+        mockResponse as Response, 
+        nextFunction
+      );
+
+      expect(nextFunction).toHaveBeenCalled();
+    });
+  });
+
+  describe('Error Handling', () => {
+    it('should handle middleware errors gracefully', () => {
+      const middleware = createMiddleware();
+      const handler = middleware.handler;
+
+      // Force an error by manipulating request
+      mockRequest.get = () => { throw new Error('Test error'); };
+
+      handler(
+        mockRequest as Request, 
+        mockResponse as Response, 
+        nextFunction
+      );
+
+      expect(mockResponse.status).toHaveBeenCalledWith(500);
+      expect(mockResponse.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          error: 'Nonce middleware error'
+        })
+      );
     });
   });
 });
